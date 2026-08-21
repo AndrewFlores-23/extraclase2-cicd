@@ -1,0 +1,161 @@
+# Ejercicio 1 - Pipeline de Integracion Continua
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Principio de minimo privilegio: el GITHUB_TOKEN solo puede leer el repositorio
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Analisis estatico (ESLint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar ESLint
+        run: npm run lint
+
+  test:
+    name: Pruebas unitarias y cobertura
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout del codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar pruebas con cobertura
+        run: npm run test:ci
+
+      - name: Publicar resumen de cobertura en el job summary
+        if: always()
+        run: |
+          echo "## Reporte de cobertura" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e "
+              const t = require('./coverage/coverage-summary.json').total;
+              const filas = ['| Metrica | Cubierto | Total | % |', '| --- | --- | --- | --- |'];
+              for (const k of ['statements','branches','functions','lines']) {
+                filas.push('| ' + k + ' | ' + t[k].covered + ' | ' + t[k].total + ' | ' + t[k].pct + '% |');
+              }
+              console.log(filas.join('\n'));
+            " >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No se genero el archivo coverage-summary.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Subir reporte de cobertura como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  build:
+    name: Build de la imagen Docker (verificacion)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout del codigo
+        uses: actions/checkout@v4
+
+      - name: Construir la imagen sin publicarla
+        run: docker build -t notas-api:ci-${{ github.sha }} .
+
+      - name: Verificar el endpoint /api/health dentro del contenedor
+        run: |
+          docker run -d --name notas-api-ci -p 3000:3000 notas-api:ci-${{ github.sha }}
+          for i in $(seq 1 20); do
+            if curl -fs http://localhost:3000/api/health > /dev/null; then
+              echo "Servicio arriba tras ${i} intento(s)"
+              curl -s http://localhost:3000/api/health
+              docker rm -f notas-api-ci
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "El contenedor no respondio a tiempo"
+          docker logs notas-api-ci
+          docker rm -f notas-api-ci
+          exit 1
+
+  notify:
+    name: Notificacion de resultado
+    runs-on: ubuntu-latest
+    needs: [lint, test, build]
+    if: always()
+    env:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      RESULTADO: ${{ (needs.lint.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success') && 'EXITO' || 'FALLO' }}
+    steps:
+      - name: Escribir el resultado en el resumen del workflow
+        run: |
+          echo "## Resultado del pipeline: $RESULTADO" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Job | Estado |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Lint | ${{ needs.lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Test | ${{ needs.test.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit: \`${{ github.sha }}\` por @${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enviar notificacion a Discord
+        if: env.DISCORD_WEBHOOK != ''
+        run: |
+          if [ "$RESULTADO" = "EXITO" ]; then export COLOR=3066993; else export COLOR=15158332; fi
+          curl -sS -H "Content-Type: application/json" -X POST -d "$(node -e '
+            const payload = {
+              embeds: [{
+                title: "CI Pipeline: " + process.env.RESULTADO,
+                description: "Repositorio: " + process.env.REPO + "\nRama: " + process.env.RAMA,
+                color: Number(process.env.COLOR),
+                url: process.env.RUN_URL
+              }]
+            };
+            console.log(JSON.stringify(payload));
+          ')" "$DISCORD_WEBHOOK"
+        env:
+          REPO: ${{ github.repository }}
+          RAMA: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Fallar el workflow si algun job previo fallo
+        if: env.RESULTADO != 'EXITO'
+        run: |
+          echo "Uno o mas jobs del pipeline fallaron."
+          exit 1

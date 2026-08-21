@@ -1,0 +1,85 @@
+# Ejercicio 3 - Workflow avanzado con matriz de pruebas
+name: Matrix Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Ejecucion programada todos los lunes a las 6:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas-matriz:
+    name: Node ${{ matrix.node-version }} en ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Todas las combinaciones se ejecutan aunque una falle
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        node-version: [18, 20, 22]
+        os: [ubuntu-latest, windows-latest]
+        exclude:
+          # Node 18 en Windows queda fuera: el proyecto no da soporte
+          # a esa combinacion heredada.
+          - node-version: 18
+            os: windows-latest
+        include:
+          # Combinacion adicional: se marca como la configuracion de
+          # referencia para publicar la cobertura.
+          - node-version: 20
+            os: ubuntu-latest
+            principal: true
+
+    steps:
+      - name: Checkout del codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar ESLint
+        run: npm run lint
+
+      - name: Ejecutar pruebas
+        run: npm run test:ci
+
+      - name: Subir cobertura de la configuracion de referencia
+        if: matrix.principal == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-matrix-node20-ubuntu
+          path: coverage/
+          retention-days: 7
+
+      - name: Registrar la combinacion en el resumen
+        if: always()
+        shell: bash
+        run: |
+          echo "- Node ${{ matrix.node-version }} / ${{ matrix.os }}: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+
+  resultado-matriz:
+    name: Consolidado de la matriz
+    runs-on: ubuntu-latest
+    needs: pruebas-matriz
+    if: always()
+    steps:
+      - name: Mostrar el resultado agregado
+        run: |
+          echo "## Resultado de la matriz de pruebas" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Estado agregado: **${{ needs.pruebas-matriz.result }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Combinaciones ejecutadas: 5 (3 versiones de Node x 2 sistemas operativos, menos 1 exclusion)." >> "$GITHUB_STEP_SUMMARY"

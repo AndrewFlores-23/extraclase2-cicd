@@ -1,0 +1,165 @@
+# Ejercicio 2 - Pipeline de Entrega/Despliegue Continuo
+# Se dispara unicamente cuando el workflow "CI Pipeline" termina
+# de forma exitosa sobre la rama main.
+name: CD Pipeline
+
+on:
+  workflow_run:
+    workflows: ['CI Pipeline']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write   # necesario para publicar en ghcr.io
+
+env:
+  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: cd-produccion
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------
+  # Job 1: construye el artefacto desplegable (imagen Docker) y lo
+  # publica en GitHub Container Registry para reutilizarlo en el deploy.
+  # ---------------------------------------------------------------
+  build-image:
+    name: Construir y publicar imagen en GHCR
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout del codigo
+        uses: actions/checkout@v4
+
+      - name: Calcular nombre y etiqueta de la imagen
+        id: meta
+        run: |
+          IMAGE="$REGISTRY/$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')"
+          TAG="${GITHUB_SHA::7}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Imagen destino: $IMAGE:$TAG"
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Autenticarse contra GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir y publicar la imagen
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generar bundle estatico como artifact de respaldo
+        run: |
+          mkdir -p dist
+          cp -r public/* dist/
+          echo "${GITHUB_SHA::7}" > dist/version.txt
+
+      - name: Subir bundle estatico
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-estatico
+          path: dist/
+          retention-days: 30
+
+  # ---------------------------------------------------------------
+  # Job 2: despliega a produccion. El environment "production" tiene
+  # una regla de proteccion (revisor requerido), por lo que este job
+  # queda en espera hasta que se apruebe manualmente.
+  # ---------------------------------------------------------------
+  deploy:
+    name: Desplegar a produccion
+    runs-on: ubuntu-latest
+    needs: build-image
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - name: Mostrar el artefacto que se va a desplegar
+        run: |
+          echo "Imagen: ${{ needs.build-image.outputs.image }}:${{ needs.build-image.outputs.tag }}"
+
+      - name: Disparar el despliegue en Render
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK" ]; then
+            echo "::error::Falta el secret RENDER_DEPLOY_HOOK"
+            exit 1
+          fi
+          RESPUESTA=$(curl -sS -w '\n%{http_code}' -X POST "$RENDER_DEPLOY_HOOK")
+          CODIGO=$(echo "$RESPUESTA" | tail -n1)
+          echo "Codigo HTTP del deploy hook: $CODIGO"
+          if [ "$CODIGO" != "200" ] && [ "$CODIGO" != "201" ]; then
+            echo "::error::El deploy hook respondio $CODIGO"
+            exit 1
+          fi
+
+      - name: Esperar a que el servicio quede disponible (smoke test)
+        env:
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+        run: |
+          if [ -z "$PRODUCTION_URL" ]; then
+            echo "::warning::No se configuro la variable PRODUCTION_URL, se omite el smoke test"
+            exit 0
+          fi
+          for i in $(seq 1 30); do
+            if curl -fs "$PRODUCTION_URL/api/health" > /dev/null; then
+              echo "Despliegue verificado tras ${i} intento(s)"
+              curl -s "$PRODUCTION_URL/api/health"
+              exit 0
+            fi
+            echo "Intento $i: el servicio aun no responde, esperando 10s..."
+            sleep 10
+          done
+          echo "::error::El servicio no respondio despues de 5 minutos"
+          exit 1
+
+      - name: Registrar el despliegue en el resumen
+        if: always()
+        run: |
+          echo "## Despliegue a produccion" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Campo | Valor |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Imagen | \`${{ needs.build-image.outputs.image }}:${{ needs.build-image.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| URL | ${{ vars.PRODUCTION_URL }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Estado | ${{ job.status }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------
+  # Job 3: si el CI fallo, el CD no despliega nada y deja constancia.
+  # ---------------------------------------------------------------
+  ci-fallido:
+    name: CI fallido - despliegue cancelado
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion != 'success'
+    steps:
+      - name: Informar que no se despliega
+        run: |
+          echo "::warning::El workflow de CI concluyo con estado '${{ github.event.workflow_run.conclusion }}'. No se ejecuta el despliegue."
+          echo "## Despliegue omitido" >> "$GITHUB_STEP_SUMMARY"
+          echo "El CI concluyo con estado \`${{ github.event.workflow_run.conclusion }}\`." >> "$GITHUB_STEP_SUMMARY"

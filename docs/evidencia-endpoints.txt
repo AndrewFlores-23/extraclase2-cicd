@@ -1,0 +1,33 @@
+===============================================================
+ EVIDENCIA DE LOS ENDPOINTS - notas-api
+ Estudiante: Andrew Manuel Corea Flores
+===============================================================
+
+$ curl -X GET /api/health
+  HTTP 200
+  {"status":"ok","servicio":"notas-api","version":"1.0.0","entorno":"development","commit":"local"}
+
+$ curl -X POST /api/promedio -d '{"notas":[90,80,100]}'
+  HTTP 200
+  {"promedio":90,"letra":"A","aprobado":true}
+
+$ curl -X POST /api/promedio -d '{"notas":[90,200]}'
+  HTTP 400
+  {"error":"Nota invalida: 200. El rango permitido es 0-100"}
+
+$ curl -X POST /api/promedio-ponderado -d '{"rubros":[{"nota":90,"peso":40},{"nota":80,"peso":35},{"nota":70,"peso":25}]}'
+  HTTP 200
+  {"promedio":81.5,"letra":"B","aprobado":true}
+
+$ curl -X POST /api/promedio-ponderado -d '{"rubros":[{"nota":100,"peso":30}]}'
+  HTTP 400
+  {"error":"Los pesos deben sumar 100, se recibio 30"}
+
+$ curl -X POST /api/resumen -d '{"notas":[95,82,71,64,48]}'
+  HTTP 200
+  {"cantidad":5,"promedio":72,"maxima":95,"minima":48,"aprobados":3,"reprobados":2,"porcentajeAprobacion":60}
+
+$ curl -X GET /api/no-existe
+  HTTP 404
+  {"error":"Ruta no encontrada: GET /api/no-existe"}
+

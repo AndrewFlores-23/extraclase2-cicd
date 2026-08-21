@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Notas API &mdash; Extraclase 2 CI/CD</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #1e293b;
+        --line: #334155;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+        --ok: #4ade80;
+        --bad: #f87171;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        display: flex;
+        justify-content: center;
+        padding: 2rem 1rem;
+      }
+      main { width: 100%; max-width: 640px; }
+      h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+      p.sub { color: var(--muted); margin: 0 0 1.5rem; font-size: .9rem; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+      }
+      label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: .4rem; }
+      input {
+        width: 100%;
+        padding: .6rem .75rem;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #0b1220;
+        color: var(--text);
+        font-size: 1rem;
+      }
+      button {
+        margin-top: .75rem;
+        width: 100%;
+        padding: .65rem;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #08131f;
+        font-weight: 600;
+        font-size: .95rem;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(1.1); }
+      #salida { margin-top: 1rem; font-size: .95rem; line-height: 1.7; }
+      .badge { padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+      .ok { background: rgba(74,222,128,.15); color: var(--ok); }
+      .bad { background: rgba(248,113,113,.15); color: var(--bad); }
+      footer { color: var(--muted); font-size: .8rem; text-align: center; margin-top: 1.5rem; }
+      code { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Notas API</h1>
+      <p class="sub">
+        Universidad Nacional de Costa Rica &middot; Programaci&oacute;n IV &middot;
+        Extraclase 2: CI/CD con GitHub Actions
+      </p>
+
+      <div class="card">
+        <label for="notas">Notas separadas por coma (0 a 100)</label>
+        <input id="notas" value="95, 82, 71, 64, 48" />
+        <button id="calcular">Calcular resumen</button>
+        <div id="salida"></div>
+      </div>
+
+      <div class="card">
+        <label>Endpoints disponibles</label>
+        <div style="font-size:.85rem;line-height:1.8;color:var(--muted)">
+          <code>GET /api/health</code><br />
+          <code>POST /api/promedio</code><br />
+          <code>POST /api/promedio-ponderado</code><br />
+          <code>POST /api/resumen</code>
+        </div>
+      </div>
+
+      <footer>Andrew Manuel Corea Flores &middot; II Ciclo 2026</footer>
+    </main>
+
+    <script>
+      const boton = document.getElementById('calcular');
+      const salida = document.getElementById('salida');
+
+      boton.addEventListener('click', async () => {
+        const notas = document
+          .getElementById('notas')
+          .value.split(',')
+          .map((n) => Number(n.trim()))
+          .filter((n) => !Number.isNaN(n));
+
+        salida.textContent = 'Calculando...';
+
+        try {
+          const [resumen, promedio] = await Promise.all([
+            fetch('/api/resumen', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ notas }),
+            }).then((r) => r.json()),
+            fetch('/api/promedio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ notas }),
+            }).then((r) => r.json()),
+          ]);
+
+          if (resumen.error) {
+            salida.innerHTML = '<span class="badge bad">' + resumen.error + '</span>';
+            return;
+          }
+
+          const clase = promedio.aprobado ? 'ok' : 'bad';
+          const estado = promedio.aprobado ? 'Aprobado' : 'Reprobado';
+
+          salida.innerHTML =
+            '<strong>Promedio:</strong> ' + resumen.promedio +
+            ' &nbsp;<span class="badge ' + clase + '">' + promedio.letra + ' &middot; ' + estado + '</span><br />' +
+            '<strong>Nota m&aacute;xima:</strong> ' + resumen.maxima + '<br />' +
+            '<strong>Nota m&iacute;nima:</strong> ' + resumen.minima + '<br />' +
+            '<strong>Aprobados:</strong> ' + resumen.aprobados + ' de ' + resumen.cantidad +
+            ' (' + resumen.porcentajeAprobacion + '%)';
+        } catch (error) {
+          salida.innerHTML = '<span class="badge bad">Error de red: ' + error.message + '</span>';
+        }
+      });
+    </script>
+  </body>
+</html>
