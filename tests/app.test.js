@@ -12,6 +12,16 @@ describe('GET /api/health', () => {
   });
 });
 
+describe('GET /notas.js', () => {
+  test('sirve el modulo de dominio para el modo estatico del front-end', async () => {
+    const res = await request(app).get('/notas.js');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/javascript/);
+    expect(res.text).toContain('globalThis.Notas');
+    expect(res.text).toContain('function calcularPromedio');
+  });
+});
+
 describe('POST /api/promedio', () => {
   test('devuelve promedio, letra y estado de aprobacion', async () => {
     const res = await request(app).post('/api/promedio').send({ notas: [90, 80, 100] });

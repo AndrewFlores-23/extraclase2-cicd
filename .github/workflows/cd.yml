@@ -1,6 +1,14 @@
 # Ejercicio 2 - Pipeline de Entrega/Despliegue Continuo
-# Se dispara unicamente cuando el workflow "CI Pipeline" termina
-# de forma exitosa sobre la rama main.
+#
+# Se dispara unicamente cuando el workflow "CI Pipeline" termina de forma
+# exitosa sobre la rama main. El flujo es:
+#
+#   build-image  ->  aprobar-produccion  ->  deploy-pages
+#                    (environment protegido)  deploy-render
+#
+# El job de aprobacion declara el environment "production", que tiene una regla
+# de revisor requerido. Ningun despliegue ocurre sin esa autorizacion manual,
+# lo que corresponde a una estrategia de Entrega Continua (Continuous Delivery).
 name: CD Pipeline
 
 on:
@@ -12,7 +20,6 @@ on:
 
 permissions:
   contents: read
-  packages: write   # necesario para publicar en ghcr.io
 
 env:
   IMAGE_NAME: ${{ github.repository }}
@@ -24,12 +31,15 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------
-  # Job 1: construye el artefacto desplegable (imagen Docker) y lo
-  # publica en GitHub Container Registry para reutilizarlo en el deploy.
+  # Job 1: construye el artefacto desplegable (imagen Docker), lo publica
+  # en GitHub Container Registry y prepara el bundle estatico.
   # ---------------------------------------------------------------
   build-image:
     name: Construir y publicar imagen en GHCR
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # necesario para publicar en ghcr.io
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
@@ -38,7 +48,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - name: Checkout del codigo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Calcular nombre y etiqueta de la imagen
         id: meta
@@ -50,17 +60,17 @@ jobs:
           echo "Imagen destino: $IMAGE:$TAG"
 
       - name: Configurar Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Autenticarse contra GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Construir y publicar la imagen
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -70,44 +80,121 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Generar bundle estatico como artifact de respaldo
+      - name: Preparar el bundle estatico
         run: |
           mkdir -p dist
-          cp -r public/* dist/
+          cp -r public/. dist/
+          # El front-end reutiliza el modulo de dominio en lugar de duplicarlo
+          cp src/lib/notas.js dist/notas.js
           echo "${GITHUB_SHA::7}" > dist/version.txt
+          touch dist/.nojekyll
+          ls -la dist
 
-      - name: Subir bundle estatico
-        uses: actions/upload-artifact@v4
+      - name: Subir el bundle como artifact descargable
+        uses: actions/upload-artifact@v7
         with:
           name: bundle-estatico
           path: dist/
           retention-days: 30
 
+      - name: Subir el bundle como artifact de GitHub Pages
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist/
+
   # ---------------------------------------------------------------
-  # Job 2: despliega a produccion. El environment "production" tiene
-  # una regla de proteccion (revisor requerido), por lo que este job
-  # queda en espera hasta que se apruebe manualmente.
+  # Job 2: compuerta de aprobacion. El environment "production" exige un
+  # revisor, por lo que el pipeline se detiene aqui hasta la autorizacion.
   # ---------------------------------------------------------------
-  deploy:
-    name: Desplegar a produccion
+  aprobar-produccion:
+    name: Aprobacion para produccion
     runs-on: ubuntu-latest
     needs: build-image
     environment:
       name: production
-      url: ${{ vars.PRODUCTION_URL }}
     steps:
-      - name: Mostrar el artefacto que se va a desplegar
+      - name: Registrar el artefacto autorizado
         run: |
-          echo "Imagen: ${{ needs.build-image.outputs.image }}:${{ needs.build-image.outputs.tag }}"
+          echo "## Aprobacion de despliegue" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Campo | Valor |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Imagen | \`${{ needs.build-image.outputs.image }}:${{ needs.build-image.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Aprobado por | @${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Disparar el despliegue en Render
-        env:
-          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+  # ---------------------------------------------------------------
+  # Job 3: despliegue del bundle estatico a GitHub Pages.
+  # ---------------------------------------------------------------
+  deploy-pages:
+    name: Desplegar a GitHub Pages
+    runs-on: ubuntu-latest
+    needs: aprobar-produccion
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.despliegue.outputs.page_url }}
+    steps:
+      - name: Publicar en GitHub Pages
+        id: despliegue
+        uses: actions/deploy-pages@v5
+
+      - name: Verificar que el sitio responde (smoke test)
+        run: |
+          URL="${{ steps.despliegue.outputs.page_url }}"
+          echo "URL publicada: $URL"
+          for i in $(seq 1 20); do
+            CODIGO=$(curl -s -o /dev/null -w '%{http_code}' "$URL")
+            if [ "$CODIGO" = "200" ]; then
+              echo "Sitio verificado tras ${i} intento(s) (HTTP $CODIGO)"
+              exit 0
+            fi
+            echo "Intento $i: HTTP $CODIGO, reintentando en 10s..."
+            sleep 10
+          done
+          echo "::error::El sitio no respondio 200 despues de los reintentos"
+          exit 1
+
+      - name: Registrar la URL en el resumen
+        if: always()
+        run: |
+          echo "## Despliegue en GitHub Pages" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "URL: ${{ steps.despliegue.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Estado: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------
+  # Job 4: despliegue de la API completa en Render (contenedor).
+  # Se omite de forma controlada mientras no exista el secret, para no
+  # marcar en rojo un pipeline cuyo despliegue principal si funciono.
+  # ---------------------------------------------------------------
+  deploy-render:
+    name: Desplegar la API en Render
+    runs-on: ubuntu-latest
+    needs: [build-image, aprobar-produccion]
+    env:
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+      PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - name: Comprobar si el destino esta configurado
+        id: check
         run: |
           if [ -z "$RENDER_DEPLOY_HOOK" ]; then
-            echo "::error::Falta el secret RENDER_DEPLOY_HOOK"
-            exit 1
+            echo "configurado=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::El secret RENDER_DEPLOY_HOOK no esta configurado; se omite el despliegue del contenedor."
+            echo "## Despliegue en Render omitido" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Falta el secret RENDER_DEPLOY_HOOK. La imagen quedo publicada en GHCR y lista para desplegarse." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configurado=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Disparar el despliegue en Render
+        if: steps.check.outputs.configurado == 'true'
+        run: |
           RESPUESTA=$(curl -sS -w '\n%{http_code}' -X POST "$RENDER_DEPLOY_HOOK")
           CODIGO=$(echo "$RESPUESTA" | tail -n1)
           echo "Codigo HTTP del deploy hook: $CODIGO"
@@ -116,9 +203,8 @@ jobs:
             exit 1
           fi
 
-      - name: Esperar a que el servicio quede disponible (smoke test)
-        env:
-          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+      - name: Esperar a que la API quede disponible (smoke test)
+        if: steps.check.outputs.configurado == 'true'
         run: |
           if [ -z "$PRODUCTION_URL" ]; then
             echo "::warning::No se configuro la variable PRODUCTION_URL, se omite el smoke test"
@@ -126,30 +212,18 @@ jobs:
           fi
           for i in $(seq 1 30); do
             if curl -fs "$PRODUCTION_URL/api/health" > /dev/null; then
-              echo "Despliegue verificado tras ${i} intento(s)"
+              echo "API verificada tras ${i} intento(s)"
               curl -s "$PRODUCTION_URL/api/health"
               exit 0
             fi
-            echo "Intento $i: el servicio aun no responde, esperando 10s..."
+            echo "Intento $i: la API aun no responde, esperando 10s..."
             sleep 10
           done
-          echo "::error::El servicio no respondio despues de 5 minutos"
+          echo "::error::La API no respondio despues de 5 minutos"
           exit 1
 
-      - name: Registrar el despliegue en el resumen
-        if: always()
-        run: |
-          echo "## Despliegue a produccion" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Campo | Valor |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Imagen | \`${{ needs.build-image.outputs.image }}:${{ needs.build-image.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| URL | ${{ vars.PRODUCTION_URL }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Estado | ${{ job.status }} |" >> "$GITHUB_STEP_SUMMARY"
-
   # ---------------------------------------------------------------
-  # Job 3: si el CI fallo, el CD no despliega nada y deja constancia.
+  # Job 5: si el CI fallo, no se despliega nada y queda constancia.
   # ---------------------------------------------------------------
   ci-fallido:
     name: CI fallido - despliegue cancelado
@@ -162,4 +236,4 @@ jobs:
         run: |
           echo "::warning::El workflow de CI concluyo con estado '${{ github.event.workflow_run.conclusion }}'. No se ejecuta el despliegue."
           echo "## Despliegue omitido" >> "$GITHUB_STEP_SUMMARY"
-          echo "El CI concluyo con estado \`${{ github.event.workflow_run.conclusion }}\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "El CI concluyo con estado ${{ github.event.workflow_run.conclusion }}." >> "$GITHUB_STEP_SUMMARY"

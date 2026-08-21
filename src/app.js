@@ -9,6 +9,13 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// La interfaz web carga el modulo de dominio directamente desde src/lib para
+// no mantener una copia paralela del mismo codigo en public/.
+app.get('/notas.js', (req, res) => {
+  res.type('application/javascript');
+  res.sendFile(path.join(__dirname, 'lib', 'notas.js'));
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',

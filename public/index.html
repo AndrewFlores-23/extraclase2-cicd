@@ -28,7 +28,7 @@
       }
       main { width: 100%; max-width: 640px; }
       h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-      p.sub { color: var(--muted); margin: 0 0 1.5rem; font-size: .9rem; }
+      p.sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; }
       .card {
         background: var(--panel);
         border: 1px solid var(--line);
@@ -36,6 +36,16 @@
         padding: 1.25rem;
         margin-bottom: 1rem;
       }
+      #modo {
+        font-size: .8rem;
+        border-radius: 8px;
+        padding: .6rem .8rem;
+        margin-bottom: 1rem;
+        border: 1px solid var(--line);
+        line-height: 1.6;
+      }
+      #modo.api { background: rgba(74, 222, 128, .08); border-color: rgba(74, 222, 128, .35); }
+      #modo.estatico { background: rgba(251, 191, 36, .08); border-color: rgba(251, 191, 36, .35); }
       label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: .4rem; }
       input {
         width: 100%;
@@ -63,7 +73,8 @@
       .badge { padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
       .ok { background: rgba(74,222,128,.15); color: var(--ok); }
       .bad { background: rgba(248,113,113,.15); color: var(--bad); }
-      footer { color: var(--muted); font-size: .8rem; text-align: center; margin-top: 1.5rem; }
+      footer { color: var(--muted); font-size: .8rem; text-align: center; margin-top: 1.5rem; line-height: 1.8; }
+      footer a { color: var(--accent); }
       code { color: var(--accent); }
     </style>
   </head>
@@ -75,6 +86,8 @@
         Extraclase 2: CI/CD con GitHub Actions
       </p>
 
+      <div id="modo">Detectando el modo de ejecuci&oacute;n&hellip;</div>
+
       <div class="card">
         <label for="notas">Notas separadas por coma (0 a 100)</label>
         <input id="notas" value="95, 82, 71, 64, 48" />
@@ -83,7 +96,7 @@
       </div>
 
       <div class="card">
-        <label>Endpoints disponibles</label>
+        <label>Endpoints de la API</label>
         <div style="font-size:.85rem;line-height:1.8;color:var(--muted)">
           <code>GET /api/health</code><br />
           <code>POST /api/promedio</code><br />
@@ -92,38 +105,97 @@
         </div>
       </div>
 
-      <footer>Andrew Manuel Corea Flores &middot; II Ciclo 2026</footer>
+      <footer>
+        Andrew Manuel Corea Flores &middot; II Ciclo 2026<br />
+        <a href="https://github.com/AndrewFlores-23/extraclase2-cicd">github.com/AndrewFlores-23/extraclase2-cicd</a>
+      </footer>
     </main>
 
+    <!-- Mismo modulo de dominio que usan el servidor y las 22 pruebas del pipeline -->
+    <script src="notas.js"></script>
     <script>
       const boton = document.getElementById('calcular');
       const salida = document.getElementById('salida');
+      const cajaModo = document.getElementById('modo');
 
-      boton.addEventListener('click', async () => {
-        const notas = document
+      // La pagina funciona en dos modos. Si detecta la API viva (despliegue en
+      // contenedor) delega el calculo al servidor; si no la encuentra (despliegue
+      // estatico en GitHub Pages) ejecuta el mismo modulo en el navegador.
+      let hayApi = false;
+
+      async function detectarModo() {
+        try {
+          const r = await fetch('api/health', { cache: 'no-store' });
+          if (!r.ok) throw new Error('respuesta ' + r.status);
+          const info = await r.json();
+          hayApi = true;
+          cajaModo.className = 'api';
+          cajaModo.innerHTML =
+            '<strong>Modo API.</strong> Los c&aacute;lculos se resuelven en el servidor. ' +
+            'Servicio <code>' + info.servicio + '</code>, entorno <code>' + info.entorno +
+            '</code>, commit <code>' + info.commit + '</code>.';
+        } catch (error) {
+          hayApi = false;
+          cajaModo.className = 'estatico';
+          cajaModo.innerHTML =
+            '<strong>Modo est&aacute;tico.</strong> Este origen no expone la API, ' +
+            'as&iacute; que los c&aacute;lculos se ejecutan en el navegador con el mismo m&oacute;dulo ' +
+            '<code>src/lib/notas.js</code> que verifican las 22 pruebas del pipeline. ' +
+            'La API completa se publica como imagen Docker en GitHub Container Registry.';
+        }
+      }
+
+      function leerNotas() {
+        return document
           .getElementById('notas')
           .value.split(',')
           .map((n) => Number(n.trim()))
           .filter((n) => !Number.isNaN(n));
+      }
 
+      async function calcularConApi(notas) {
+        const pedir = (ruta) =>
+          fetch(ruta, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notas }),
+          }).then((r) => r.json());
+
+        const [resumen, promedio] = await Promise.all([
+          pedir('api/resumen'),
+          pedir('api/promedio'),
+        ]);
+        return { resumen, promedio };
+      }
+
+      function calcularEnNavegador(notas) {
+        const resumen = Notas.resumirGrupo(notas);
+        const valor = Notas.calcularPromedio(notas);
+        return {
+          resumen,
+          promedio: {
+            promedio: valor,
+            letra: Notas.convertirALetra(valor),
+            aprobado: Notas.estaAprobado(valor),
+          },
+        };
+      }
+
+      function mostrarError(mensaje) {
+        salida.innerHTML = '<span class="badge bad">' + mensaje + '</span>';
+      }
+
+      boton.addEventListener('click', async () => {
+        const notas = leerNotas();
         salida.textContent = 'Calculando...';
 
         try {
-          const [resumen, promedio] = await Promise.all([
-            fetch('/api/resumen', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ notas }),
-            }).then((r) => r.json()),
-            fetch('/api/promedio', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ notas }),
-            }).then((r) => r.json()),
-          ]);
+          const { resumen, promedio } = hayApi
+            ? await calcularConApi(notas)
+            : calcularEnNavegador(notas);
 
-          if (resumen.error) {
-            salida.innerHTML = '<span class="badge bad">' + resumen.error + '</span>';
+          if (resumen.error || promedio.error) {
+            mostrarError(resumen.error || promedio.error);
             return;
           }
 
@@ -138,9 +210,11 @@
             '<strong>Aprobados:</strong> ' + resumen.aprobados + ' de ' + resumen.cantidad +
             ' (' + resumen.porcentajeAprobacion + '%)';
         } catch (error) {
-          salida.innerHTML = '<span class="badge bad">Error de red: ' + error.message + '</span>';
+          mostrarError(error.message);
         }
       });
+
+      detectarModo();
     </script>
   </body>
 </html>

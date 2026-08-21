@@ -136,7 +136,7 @@ function resumirGrupo(notas) {
   };
 }
 
-module.exports = {
+const api = {
   NOTA_MINIMA,
   NOTA_MAXIMA,
   NOTA_APROBACION,
@@ -148,3 +148,15 @@ module.exports = {
   estaAprobado,
   resumirGrupo,
 };
+
+// El modulo no declara dependencias, por lo que puede exponerse tanto a
+// Node.js (servidor y pruebas) como al navegador. Gracias a esto, el
+// despliegue estatico en GitHub Pages reutiliza exactamente la misma logica
+// de dominio que valida el pipeline de CI, sin duplicar una sola linea.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = api;
+}
+
+if (typeof globalThis !== 'undefined') {
+  globalThis.Notas = api;
+}
