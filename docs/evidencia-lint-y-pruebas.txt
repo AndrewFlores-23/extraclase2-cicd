@@ -2,7 +2,7 @@
  EVIDENCIA DE EJECUCION LOCAL - Extraclase 2 CI/CD
  Proyecto: notas-api
  Estudiante: Andrew Manuel Corea Flores
- Fecha: 2026-08-21 09:05
+ Fecha: 2026-08-21 09:35
  Node: v24.16.0  |  npm: 11.13.0
 ===============================================================
 
@@ -14,29 +14,29 @@ Codigo de salida: 0 (sin errores ni advertencias)
 ---------------------------------------------------------------
 2) npm run test:ci  (Jest con cobertura)
 ---------------------------------------------------------------
-PASS tests/notas.test.js
 PASS tests/app.test.js
+PASS tests/notas.test.js
 ------------------|---------|----------|---------|---------|-------------------
 File              | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
 ------------------|---------|----------|---------|---------|-------------------
-All files         |     100 |    89.58 |     100 |     100 |                   
+All files         |     100 |    87.03 |     100 |     100 |                   
  src              |     100 |    66.66 |     100 |     100 |                   
-  app.js          |     100 |    66.66 |     100 |     100 | 16-17             
- src/lib          |     100 |      100 |     100 |     100 |                   
-  notas.js        |     100 |      100 |     100 |     100 |                   
+  app.js          |     100 |    66.66 |     100 |     100 | 23-24             
+ src/lib          |     100 |    95.23 |     100 |     100 |                   
+  notas.js        |     100 |    95.23 |     100 |     100 | 156-160           
  src/routes       |     100 |       50 |     100 |     100 |                   
   notas.routes.js |     100 |       50 |     100 |     100 | 31-57             
 ------------------|---------|----------|---------|---------|-------------------
 
 =============================== Coverage summary ===============================
-Statements   : 100% ( 78/78 )
-Branches     : 89.58% ( 43/48 )
-Functions    : 100% ( 17/17 )
-Lines        : 100% ( 71/71 )
+Statements   : 100% ( 85/85 )
+Branches     : 87.03% ( 47/54 )
+Functions    : 100% ( 18/18 )
+Lines        : 100% ( 78/78 )
 ================================================================================
 
 Test Suites: 2 passed, 2 total
-Tests:       22 passed, 22 total
+Tests:       23 passed, 23 total
 Snapshots:   0 total
-Time:        1.451 s, estimated 8 s
+Time:        1.005 s
 Ran all test suites.

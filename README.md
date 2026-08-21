@@ -12,6 +12,8 @@ API REST en Node.js + Express para el calculo de notas academicas, usada como
 caso de estudio para implementar un pipeline completo de integracion y
 despliegue continuo con GitHub Actions.
 
+**Sitio desplegado:** https://andrewflores-23.github.io/extraclase2-cicd/
+
 ---
 
 ## 1. Descripcion de la aplicacion
@@ -87,7 +89,7 @@ src/
   server.js             # Punto de entrada
 tests/
   notas.test.js         # 14 pruebas unitarias de la logica de dominio
-  app.test.js           # 8 pruebas de integracion sobre la API
+  app.test.js           # 9 pruebas de integracion sobre la API
 public/index.html       # Interfaz web
 docs/                   # Evidencias y analisis comparativo
 Dockerfile              # Build multietapa, usuario sin privilegios
@@ -103,8 +105,8 @@ package.json
 | --- | --- |
 | Disparadores | `push` a `main` y `develop`, `pull_request` hacia `main`, y `workflow_dispatch` manual. |
 | Linting | Job `lint` que ejecuta `npm run lint` (ESLint 9, flat config). |
-| Pruebas unitarias | Job `test` con **22 pruebas** (minimo requerido: 5) sobre `jest`. |
-| Cobertura como artifact | `actions/upload-artifact@v4` publica el directorio `coverage/` con retencion de 14 dias. |
+| Pruebas unitarias | Job `test` con **23 pruebas** (minimo requerido: 5) sobre `jest`. |
+| Cobertura como artifact | `actions/upload-artifact@v7` publica el directorio `coverage/` con retencion de 14 dias. |
 | Notificaciones | Job `notify` con `if: always()` que escribe el resultado en el *job summary*, envia un embed a Discord si existe el secret `DISCORD_WEBHOOK` y falla el workflow si algun job previo fallo (status check rojo en el PR). |
 
 El pipeline añade un job `build` que construye la imagen Docker y verifica que
@@ -114,36 +116,61 @@ integrable.
 Cobertura obtenida localmente:
 
 ```
-Statements   : 100%   (78/78)
-Branches     : 89.58% (43/48)
-Functions    : 100%   (17/17)
-Lines        : 100%   (71/71)
+Statements   : 100%   (85/85)
+Branches     : 87.03% (47/54)
+Functions    : 100%   (18/18)
+Lines        : 100%   (78/78)
 ```
+
+`package.json` declara umbrales minimos (85 % en statements, functions y lines;
+75 % en branches). Si una modificacion baja la cobertura, Jest devuelve un
+codigo de salida distinto de cero y el pipeline falla.
 
 ---
 
 ## 5. Ejercicio 2 - Pipeline de CD (`cd.yml`)
 
+> **Sitio desplegado:** https://andrewflores-23.github.io/extraclase2-cicd/
+
+El flujo del pipeline es:
+
+```
+build-image  ->  aprobar-produccion  ->  deploy-pages
+                 (environment            deploy-render
+                  protegido)
+```
+
 | Requisito | Implementacion |
 | --- | --- |
 | Disparador | `workflow_run` sobre el workflow `CI Pipeline`, tipo `completed`, rama `main`, con la guarda `github.event.workflow_run.conclusion == 'success'`. |
-| Artefacto desplegable | Imagen Docker multietapa publicada en `ghcr.io` con las etiquetas `:<sha-corto>` y `:latest`, mas un bundle estatico subido como artifact. |
-| Despliegue automatico | Job `deploy` que dispara el *deploy hook* de Render y ejecuta un smoke test contra `/api/health`. |
-| Environment protegido | `environment: production` con regla de proteccion (revisor requerido) configurada en *Settings > Environments*. |
-| Secrets | `RENDER_DEPLOY_HOOK` (secret) y `PRODUCTION_URL` (variable de entorno del environment). `GITHUB_TOKEN` se usa para autenticarse contra GHCR con `packages: write`. |
+| Artefacto desplegable | Imagen Docker multietapa publicada en `ghcr.io` con las etiquetas `:<sha-corto>` y `:latest`, mas el bundle estatico subido como artifact descargable y como artifact de Pages. |
+| Environment protegido | Job `aprobar-produccion` con `environment: production` y regla de revisor requerido. El pipeline se detiene ahi hasta la autorizacion manual, lo que corresponde a una estrategia de *Continuous Delivery*. |
+| Despliegue automatico | Job `deploy-pages` publica en GitHub Pages y verifica con un smoke test que la URL responda `200`. |
+| Despliegue del contenedor | Job `deploy-render` dispara el *deploy hook* de Render y verifica `/api/health`. Se omite de forma controlada mientras no exista el secret, sin marcar el pipeline en rojo. |
+| Secrets | `GITHUB_TOKEN` (automatico) para autenticarse contra GHCR con `packages: write`; `RENDER_DEPLOY_HOOK` y la variable `PRODUCTION_URL` para el despliegue del contenedor. |
 
-Un tercer job, `ci-fallido`, deja constancia en el resumen cuando el CI no
+Un ultimo job, `ci-fallido`, deja constancia en el resumen cuando el CI no
 concluyo exitosamente y el despliegue se omite.
 
-> **URL de produccion:** _(completar tras el despliegue)_
+### Modos de ejecucion de la interfaz
 
-### Secrets y variables a configurar
+La pagina detecta al cargar si el origen expone la API:
 
-| Nombre | Tipo | Ambito | Uso |
+- **Modo API** (contenedor Docker, local o en Render): los calculos se resuelven
+  en el servidor mediante los endpoints REST.
+- **Modo estatico** (GitHub Pages): no hay servidor, asi que la pagina ejecuta
+  en el navegador el mismo modulo `src/lib/notas.js` que verifican las pruebas.
+  El bundle lo copia el propio pipeline, de modo que no existe una copia
+  paralela del codigo.
+
+### Secrets y variables
+
+| Nombre | Tipo | Ambito | Estado |
 | --- | --- | --- | --- |
-| `RENDER_DEPLOY_HOOK` | Secret | Environment `production` | URL del deploy hook de Render. |
-| `PRODUCTION_URL` | Variable | Environment `production` | URL publica del servicio, usada en el smoke test. |
-| `DISCORD_WEBHOOK` | Secret | Repositorio | Notificaciones de CI (opcional). |
+| `GITHUB_TOKEN` | Automatico | Workflow | Ya disponible. |
+| `RENDER_DEPLOY_HOOK` | Secret | Environment `production` | Pendiente: requerido solo para desplegar el contenedor en Render. |
+| `PRODUCTION_URL` | Variable | Environment `production` | Pendiente: URL publica de la API para el smoke test. |
+| `DISCORD_WEBHOOK` | Secret | Repositorio | Opcional: notificaciones de CI. |
 
 ---
 
